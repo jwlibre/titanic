@@ -1,2 +1,4 @@
 data
 virtualenv
+.DS_Store
+.idea/

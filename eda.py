@@ -1,20 +1,20 @@
 import pandas as pd
 import numpy as np
 from sklearn import svm, metrics
+from sklearn.impute import SimpleImputer
 import pdb
 
 class Model:
     # attributes of Model object:
     # type [linear, poly, rbf, sigmoid]
-    # description
     # degree
     # gamma
     # features used
-    def __init__(self, type, description, degree, gamma, features):
+    def __init__(self, type, degree, gamma, C, features):
         self.type = type
-        self.description = description
         self.degree = degree
         self.gamma = gamma
+        self.C = C
         self.features = features
         self.score = 0
 
@@ -27,23 +27,43 @@ class Model:
         elif self.type == 'poly':
             clf = svm.SVC(kernel=self.type, degree=self.degree)
         else:
-            clf = svm.SVC(kernel=self.type, gamma=self.gamma)
+            clf = svm.SVC(kernel=self.type, gamma=self.gamma, C=self.C)
         clf.fit(X, y)
         predictions_cv = clf.predict(X_cv)
         f1 = metrics.f1_score(y_cv, predictions_cv)
-        print("{} has F1 score: {}".format(self.description,f1))
         self.score = f1
-        print("score assigned to model {} = {}".format(self.description, self.score))
 
 
 train_data = pd.read_csv("data/train.csv")
 test_data = pd.read_csv("data/test.csv")
 
-# Separate CV data from training data
 # ensure training data is randomised first!
 train_data = train_data.sample(frac=1).reset_index(drop=True)
-cv_data = train_data.iloc[750:]
-train_data = train_data.iloc[:750]
+
+# dataset for categorical imputation - 'embarked'
+imp_cat = SimpleImputer(missing_values=np.nan, strategy='most_frequent')
+cat_imp_train = pd.DataFrame(train_data['Embarked'], dtype='category')
+cat_imp_test = pd.DataFrame(test_data['Embarked'], dtype='category')
+
+cat_imp_train = imp_cat.fit_transform(cat_imp_train)
+train_data['Embarked'] = cat_imp_train
+cat_imp_test = imp_cat.fit_transform(cat_imp_test)
+test_data['Embarked'] = cat_imp_test
+
+# dataset for non-categorical imputation
+imp_noncat = SimpleImputer(missing_values=np.nan, strategy='mean')
+noncategoricals = ['Age','SibSp','Parch','Fare']
+noncat_imp_train = train_data[noncategoricals]
+noncat_imp_test = test_data[noncategoricals]
+noncat_imp_train = pd.DataFrame(imp_noncat.fit_transform(noncat_imp_train), columns=noncategoricals)
+noncat_imp_test = pd.DataFrame(imp_noncat.fit_transform(noncat_imp_test), columns=noncategoricals)
+for key in noncategoricals:
+    train_data[key] = noncat_imp_train[key]
+    test_data[key] = noncat_imp_test[key]
+
+# Separate CV data from training data
+cv_data = train_data.iloc[800:]
+train_data = train_data.iloc[:800]
 
 y = train_data["Survived"]
 y_cv = cv_data["Survived"]
@@ -51,9 +71,8 @@ y_cv = cv_data["Survived"]
 all_features = ['Pclass', 'Sex', 'Age',
                 'SibSp', 'Parch', 'Fare', 'Embarked']
 
+
 # normalise the Fare and the Age features
-# be aware that these variables both contain NaN - how should I approach
-# missing values?
 mean_age = train_data.Age.mean()
 sigma_age = np.sqrt(train_data.Age.var())
 
@@ -72,90 +91,94 @@ test_data["Fare_scaled"] = (test_data.Fare - mean_fare)/sigma_fare
 
 # set up lists for storing evaluation metrics for each model,
 # so we can pick the best one
-# TO-DO - replace with a summary table detailing all parameters of model,
-# types of model,
-# features used
-model_desc_list = []
+g_list = []
+d_list = []
+k_list = []
+C_list = []
+features_list = []
 f1_list = []
 
+features_sets = [['Pclass', 'Sex', 'SibSp', 'Parch', 'Embarked', 'Fare_scaled', 'Age_scaled'],
+                 ['Pclass', 'Sex', 'SibSp', 'Parch'],
+                 ['Pclass', 'Sex', 'SibSp', 'Parch', 'Fare_scaled', 'Age_scaled'],
+                 ['Pclass', 'Sex', 'SibSp', 'Parch', 'Fare', 'Age']]
 
-
-
-# SECTION 1 - Unscaled Features
-features = ['Pclass', 'Sex', 'SibSp', 'Parch']
-X = pd.get_dummies(train_data[features])
-X_cv = pd.get_dummies(cv_data[features])
-
-model_desc = "Linear kernel, no scalable features included"
-model = Model(type='linear', description=model_desc, degree=0, gamma=0, features=features)
-pdb.set_trace()
-
+print('finding best model...')
+# explore linear, poly, rbf and sigmoid models
 kernels = ['linear', 'poly', 'rbf', 'sigmoid']
-for k in kernels:
-    if k == 'linear':
-        model = Model(type=k, description=model_desc, degree=0, gamma=0, features=features)
-        model.fit_and_evaluate_svm(X, y, X_cv, y_cv)
-        model_desc_list.append(model_desc)
-        f1_list.append(model.score)
-    elif k == 'poly':
-        for i in range(10):
-            model = Model(type=k, description=model_desc, degree=i, gamma=0, features=features)
+for features in features_sets:
+    X = pd.get_dummies(train_data[features])
+    X_cv = pd.get_dummies(cv_data[features])
+    for k in kernels:
+        if k == 'linear':
+            model = Model(type=k, degree='NA', gamma='NA', C='NA', features=features)
             model.fit_and_evaluate_svm(X, y, X_cv, y_cv)
-            model_desc_list.append(model_desc)
             f1_list.append(model.score)
-    else:
-        for g in ['auto', 'scale']:
+            g_list.append(model.gamma)
+            d_list.append(model.degree)
+            C_list.append(model.C)
+            features_list.append(model.features)
+            k_list.append(k)
+        elif k == 'poly':
+            for d in range(10):
+                model = Model(type=k, degree=d, gamma='NA', C='NA', features=features)
+                model.fit_and_evaluate_svm(X, y, X_cv, y_cv)
+                f1_list.append(model.score)
+                g_list.append(model.gamma)
+                d_list.append(model.degree)
+                C_list.append(model.C)
+                features_list.append(model.features)
+                k_list.append(k)
+        else:
+            for g in ['auto', 'scale', 1e-3, 1e-2, 1e-1, 1, 1e1, 1e2]:
+                for C in [1e1, 1e2, 1e3, 1e4, 1e5, 1e6]:
+                    model = Model(type=k, degree='NA', gamma=g, C=C, features=features)
+                    model.fit_and_evaluate_svm(X, y, X_cv, y_cv)
+                    f1_list.append(model.score)
+                    g_list.append(model.gamma)
+                    d_list.append(model.degree)
+                    C_list.append(model.C)
+                    features_list.append(model.features)
+                    k_list.append(k)
 
 
-# Model 1: linear kernel
-clf = svm.SVC(kernel = 'linear')
-model_desc = "Linear kernel, no scaled features"
-fit_and_evaluate_svm(clf, X, y, X_cv, y_cv, model_desc_list, f1_list, model_desc)
+summary = pd.DataFrame()
+summary['k'] = k_list
+summary['d'] = d_list
+summary['g'] = g_list
+summary['C'] = C_list
+summary['features'] = features_list
+summary['f1'] = f1_list
+summary = summary.sort_values(by='f1', ascending=False, ignore_index=True)
+print(summary.head())
 
-# Model 2: let's try a polynomial, and try different degrees
-for i in range(10):
-    clf = svm.SVC(kernel='poly', degree=i)
-    model_desc = "Polynomial with degree {}, no scaled features".format(i)
-    fit_and_evaluate_svm(clf, X, y, X_cv, y_cv, model_desc_list, f1_list, model_desc)
+print('Highest performing model:')
+print(summary.loc[0])
 
-# Model 3 and 4: let's try rbf and sigmoid, and try different gamma values
-for k in ['rbf', 'sigmoid']:
-    for g in ['auto', 'scale']:
-        clf = svm.SVC(kernel=k, gamma=g)
-        model_desc = "{} with gamma {}, no scaled features".format(k, g)
-        fit_and_evaluate_svm(clf, X, y, X_cv, y_cv, model_desc_list, f1_list, model_desc)
+# THE TOP ROW OF summary GIVES THE BEST CONFIGURATION FOR SVM
+# now, rerun this best configuration on the original training and test data
+train_data = train_data.append(cv_data)
+y = train_data["Survived"]
 
+type = summary['k'][0]
+print('Fitting {} model to test data...'.format(type))
 
-# SECTION 2 - try normalising the Fare and Age features and include them
-# in the analysis
+if type == 'linear':
+    clf = svm.SVC(kernel=type)
+elif type == 'poly':
+    clf = svm.SVC(kernel=type, degree=summary['d'][0])
+else:
+    clf = svm.SVC(kernel=type, gamma=summary['g'][0], C=summary['C'][0])
 
+features = summary['features'][0]
+X = pd.get_dummies(train_data[features])
+clf.fit(X, y)
 
+X_test = pd.get_dummies(test_data[features])
+predictions = clf.predict(X_test)
 
-pdb.set_trace()
-
-
-
-
-
-# CODE FOR LOOPING OVER KERNEL TYPES - NOT USEFUL IF WE'RE GOING OOP
-kernels = ['linear', 'poly', 'rbf', 'sigmoid']
-
-# for k in kernels:
-#     if k == 'poly':
-#         for i in range(10):
-#             clf = svm.SVC(kernel=k, degree=i)
-#             model_desc = "Polynomial with degree {}, {}".format(i, features_desc)
-#             fit_and_evaluate_svm(clf, X, y, X_cv, y_cv, model_desc_list, f1_list, model_desc)
-#     else if k == 'rbf' or k == 'sigmoid':
-#         for g in ['auto', 'scale']:
-#             clf = svm.SVC(kernel=k, gamma=g)
-#             model_desc = "{} with gamma {}, {}".format(k, g, features_desc)
-#             fit_and_evaluate_svm(clf, X, y, X_cv, y_cv, model_desc_list, f1_list, model_desc)
-#     else:
-#         clf = svm.SVC(kernel = 'linear')
-#         model_desc = "Linear kernel, {}".format(features_desc)
-#         fit_and_evaluate_svm(clf, X, y, X_cv, y_cv, model_desc_list, f1_list, model_desc)
-
-
+print('writing output file')
 # OUTPUT TO CSV
 output = pd.DataFrame({'PassengerId': test_data.PassengerId, 'Survived': predictions})
+output.to_csv("outputs/svm_optimal_1.csv", index=False)
+print('done')
